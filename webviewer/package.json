@@ -1,0 +1,23 @@
+{
+  "name": "akrolimb-webviewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.158.0",
+    "three-stdlib": "^2.33.0",
+    "@react-three/fiber": "^8.15.13",
+    "@react-three/drei": "^9.105.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "@vitejs/plugin-react": "^4.3.1"
+  }
+}

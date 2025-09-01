@@ -23,5 +23,9 @@ out/
 dist/
 build/
 
+# Frontend (webviewer)
+webviewer/node_modules/
+webviewer/dist/
+
 # Logs
 *.log
