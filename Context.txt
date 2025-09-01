@@ -1,0 +1,399 @@
+1) Problem statement (what we’re building)
+
+Given a limb mesh (STL/OBJ) and prosthetist inputs (landmarks, trimline, sensitive areas), generate a clinically reviewable socket model that:
+
+Provides uniform or region-varying clearance from the limb.
+
+Enforces wall thickness and trim/brim geometry.
+
+Supports automated suggestions (clearance/relief fields, brim patterns) with full manual override.
+
+Produces manufacturable, watertight STL, plus measurements (sections, perimeters, volume) for QC.
+
+Runs fast on commodity hardware and is portable to mobile (on-device or thin client).
+
+We will start small (M0) with: load limb STL → uniform clearance offset → wall → simple trim plane → export STL + QC slices. Then iterate to variable relief, trimline curves, and clinician-driven edits.
+
+2) Inputs & outputs (contracts)
+Inputs
+
+Limb Mesh: *.stl or *.obj. Assumptions:
+
+Single, outward-facing manifold component (or we fix it).
+
+Units mm (validated on load; allow scale hint if unknown).
+
+Annotations (JSON) (optional at M0, required at M1+):
+
+landmarks: named 3D points (name, x,y,z, optional radius_mm).
+
+curves: polylines (name, points: [[x,y,z], ...], type = trimline|relief|load_bearing).
+
+base_clearance_mm: default inner offset (e.g., 2.5).
+
+relief_rules: per region {curve_name, delta_mm, falloff_mm} (+relief or −compression).
+
+wall_thickness_mm: e.g., 4.0.
+
+axis_hint: optional up-axis vector / PCA lock.
+
+Outputs
+
+socket_inner.stl (watertight).
+
+socket_outer.stl.
+
+socket_trimmed.stl (final).
+
+sections.csv (z, perimeter_mm, area_mm², equivalent_diameter_mm).
+
+provenance.json (versions, params, hashes of inputs).
+
+preview.glb (optional lightweight preview for mobile).
+
+3) Core pipeline (by milestone)
+M0 — Baseline socket (uniform clearance, trim plane)
+
+Load & validate
+
+Detect/confirm units (mm). If bounding box ∉ [30, 1000] mm range, request scale factor or rely on fiducial from upstream.
+
+Ensure manifoldness; repair if needed (fill small holes, flip normals).
+
+Orient & normalize (optional at M0)
+
+PCA long-axis → +Z (only if stable; else keep as-is).
+
+Remesh & smooth (gentle)
+
+Isotropic remesh to target edge length 2–3 mm.
+
+1–3 Laplacian or Taubin steps (preserve overall shape).
+
+Inner surface (clearance)
+
+Normal offset: v' = v + n * c0, c0 = base_clearance_mm.
+
+If c0 > 4–5 mm or self-intersections appear → fallback to volumetric offset:
+
+Voxelize limb (resolution 0.5–1.0 mm), dilate by c0 voxels, marching cubes.
+
+Outer surface (wall)
+
+Repeat offset with thickness t along inner normals or via volumetric union (preferred if inner is volumetric).
+
+Trim
+
+Simple plane cut (keep vertices with z ≤ z_trim) while we build trimline tooling.
+
+QC & export
+
+Slice final mesh every 5–10 mm; compute perimeter/area.
+
+Write sections.csv, socket_* STLs.
+
+M1 — Variable clearance & clinician trimline
+
+Build a scalar clearance field over the limb:
+
+For each relief curve: add a Gaussian bump:
+delta(v) = Σ_i (Δ_i * exp(-(dist_to_curve_i / σ_i)^2)), clamp overall c(v) ∈ [0.5, 10] mm.
+
+Recompute inner/outer via per-vertex offset (or volume when needed).
+
+Trim with curve-driven surface:
+
+Convert trimline polyline to an implicit field (e.g., height + smoothed offset) and cut.
+
+M2 — Edge shaping, flares, manufacturability
+
+Edge flare or fillet: offset edge loop outward + smooth ring blend.
+
+Uniform thickness compliance: min thickness checks; local buttress if needed.
+
+Scale sanity: allow prosthetist to enforce circumference at a given z (uniform scale of inner).
+
+4) Algorithms & implementation details (decisions)
+
+Normal vs volumetric offset
+
+Use normal when max(c) ≤ 4 mm and curvature moderate.
+
+Use volumetric (voxel dilate → marching cubes) for larger offsets or concave regions to avoid self-intersections.
+
+Clearance field construction
+
+Base: scalar c0.
+
+Additive fields for relief/pressure regions from curves & landmarks (Euclidean or geodesic distance—start Euclidean; consider geodesic later).
+
+Clamp + smooth (bilateral or Laplacian on field).
+
+Trimline cut
+
+M0: plane.
+
+M1: rasterize trimline to an unsigned distance field on the surface (heat method or fast marching) and cut with thresholded field projected to 3D; smooth edge.
+
+QC sections
+
+Intersect mesh with horizontal planes; if open, close section polygon (ear clipping), compute perimeter/area.
+
+Manifold & watertightness
+
+After boolean ops/cuts: run manifold/degenerate checks, repair small defects (< edge_length).
+
+Units
+
+Everything in mm. Persist in provenance.json.
+
+5) Architecture & code layout (monorepo, isolation)
+akrolimb/
+  recon/                # existing SfM/MVS (unchanged)
+  socketlab/            # NEW
+    pyproject.toml      # or requirements.txt (CPU only)
+    src/socketlab/
+      cli.py            # CLIs: make-socket, qc, preview
+      io.py             # I/O, unit checks, hashing
+      orient.py         # PCA axis, alignment
+      remesh.py         # isotropic remesh, smoothing
+      field.py          # clearance field (base + curves)
+      offset.py         # normal & volumetric offsets
+      trim.py           # plane & curve-based trimming
+      qc.py             # sections, metrics
+      prov.py           # provenance logging
+      types.py          # dataclasses / pydantic schemas
+    tests/
+    examples/
+      limb_sample.stl
+      annotations.example.json
+
+
+No dependency on CUDA/Qt/OpenGL. CPU-only libs: trimesh, numpy, scipy, open3d (CPU), pydantic/jsonschema.
+
+Interfaces:
+
+Library API: socketlab.make_socket(limb_path, annotations, outdir, opts: MakeSocketOptions) -> Result.
+
+CLI: socketlab make-socket ... for scripting & CI.
+
+Provenance everywhere: record versions, parameters, input hashes, timestamps.
+
+6) Mobile considerations (run where?)
+
+Two viable paths (we can support both):
+
+Thin client (recommended first):
+
+Mobile app = viewer/editor + annotation UI.
+
+Heavy geometry runs in a stateless API (containerized socketlab).
+
+Pros: fast dev, consistent numerics, easier updates.
+
+Cons: network dependency (mitigate with small uploads, GLB previews, resumable transfers).
+
+On-device (phase 2):
+
+Use a native geometry engine (Metal/Vulkan/SceneKit/Filament) for preview & light edits.
+
+Heavy ops (volumetric offsets, booleans) are still expensive; consider WebAssembly + wasm-port of robust kernels (CGAL/Carve/Triangle) later.
+
+Mobile performance budget
+
+Target meshes ≤ 200k faces for interactive preview.
+
+Provide decimated preview GLB (≤ 5–10 MB).
+
+Keep STL/GCode export on server for now.
+
+7) Prosthetist UX (flows & affordances)
+
+Primary flow
+
+Open case → view limb preview (aligned, with scale).
+
+Pick preset: “Below-knee default” [base_clearance, wall, brim template].
+
+Adjust base clearance slider; toggle “Show relief map.”
+
+Place/edit trimline (draw curve), live preview updates (socket inner in translucent).
+
+Mark sensitive / load-bearing curves (tap-to-add points, drag).
+
+Tap Generate → progress → new preview with QC panel (sections, perimeters).
+
+Manual tweak modes:
+
+Local brush: ±clearance.
+
+Move trimline.
+
+Set thickness in specific bands.
+
+Approve → export STL + sections CSV; store provenance.
+
+Safeguards
+
+Show min thickness and min/avg clearance badges (green/amber/red).
+
+Edge warnings: self-intersection detected → auto switch to volumetric offset.
+
+8) Data schemas (pydantic-ish)
+// annotations.json
+{
+  "units": "mm",
+  "base_clearance_mm": 2.5,
+  "wall_thickness_mm": 4.0,
+  "landmarks": [
+    {"name": "tibial_crest", "xyz": [12.3, 45.6, 178.0]}
+  ],
+  "curves": [
+    {"name": "trimline", "type": "trimline", "points": [[x,y,z], ...]},
+    {"name": "fibular_head_relief", "type": "relief", "points": [[...]]}
+  ],
+  "relief_rules": [
+    {"curve_name": "fibular_head_relief", "delta_mm": +3.0, "falloff_mm": 15.0}
+  ],
+  "axis_hint": {"up": [0,0,1]}
+}
+
+// provenance.json
+{
+  "socketlab_version": "0.1.0",
+  "timestamp": "2025-08-26T12:34:56Z",
+  "inputs": {
+    "limb_mesh_sha256": "…",
+    "annotations_sha256": "…"
+  },
+  "params": {
+    "offset_mode": "normal|volumetric",
+    "base_clearance_mm": 2.5,
+    "wall_mm": 4.0,
+    "trim": {"mode": "plane|curve", "z_mm": 120}
+  },
+  "stats": {
+    "bbox_mm": [dx, dy, dz],
+    "faces": 150234,
+    "sections": 30,
+    "volume_cm3": 410.2
+  }
+}
+
+9) Automated suggestions (how we compute them)
+
+Preset library (per limb type): base clearance, wall thickness, typical trim heights.
+
+Relief map auto-seed:
+
+Use landmark pairs / ratios to predict likely sensitive zones (e.g., around tibial crest).
+
+Infer load-bearing bands (posterior) from axis & limb cross-sections (ellipse eccentricity heuristic).
+
+Brim templates (parametric curves) adjustable by handles.
+
+All suggestions must be transparent (show the map) and editable.
+
+10) Validation & QC (acceptance)
+
+Definition of Done for M0
+
+CLI generates socket_trimmed.stl from limb_sample.stl in < 30s on laptop CPU.
+
+Mesh is watertight, manifold, min thickness ≥ wall_mm − 0.3 mm.
+
+sections.csv perimeters monotonic where expected, no NaNs.
+
+Provenance written, includes reproducible params.
+
+Unit & property tests
+
+Cylinder limb + known offsets → perimeters match analytically within 1–2%.
+
+Relief curve increases clearance locally (field maxima at curve).
+
+Plane trim at z cuts exact cross-section.
+
+Golden cases
+
+3 synthetic limbs (cylinder, tapered cone, irregular) + assertion snapshots.
+
+11) Security, privacy, safety
+
+PHI never embedded in meshes; filenames anonymized; provenance stores only hashes.
+
+Version pinning for geometry libraries (reproducibility).
+
+Audit log: each socket generation step recorded (params, user, time).
+
+Clinical: visualize clearance heatmap and printable QC report to aid sign-off.
+
+12) Performance & robustness
+
+Target ≤ 200k faces input; decimate on load if larger (preserve silhouette).
+
+Volumetric path resolution adaptive to bbox (0.5–1.0 mm voxel).
+
+Time budgets:
+
+Normal offset: O(n) ~ a few seconds.
+
+Volumetric offset @ 1 mm: < 10–20s typical on CPU.
+
+Fail-safes:
+
+Detect self-intersection → switch to volumetric.
+
+Bad manifold → attempt repair; if fail, return actionable errors.
+
+13) Developer ergonomics
+
+Single-file demo in examples/ with CLI commands.
+
+Makefile targets: make socket EXAMPLE=examples/limb_sample.stl.
+
+Type hints & docstrings; 90% unit coverage in socketlab/tests.
+
+No coupling to recon: consume mesh paths only.
+
+14) Roadmap (6–8 weeks)
+
+Week 1–2 (M0): I/O, normal offset, plane trim, QC, provenance, CLI.
+
+Week 3–4 (M1): Curve tools, variable clearance field, curve-based trim, previews.
+
+Week 5 (M2): Edge flare, manufacturability checks, better repairs.
+
+Week 6: Mobile prototype (viewer + annotations; server-side generation).
+
+Week 7–8: Usability passes with prosthetists; preset tuning; docs & training clips.
+
+15) “Context block” for copilots (paste this into AI tools)
+
+Project: SocketLab — generate prosthetic sockets from a limb mesh.
+Input: STL/OBJ limb in millimeters, optional annotations (landmarks, relief curves, trimline), base_clearance_mm, wall_thickness_mm.
+Output: Manifold, watertight socket STL(s) with uniform or variable clearance, trimmed brim, plus sections.csv and provenance.json.
+Constraints: Prefer normal offsets for small clearances; fallback to volumetric offset (voxel dilate + marching cubes) if self-intersections or large offsets. All dimensions mm. Avoid CUDA/Qt; CPU-only libraries (trimesh, numpy, scipy, open3d CPU).
+M0 task: Implement make_socket() that loads limb STL, validates mm scale, optional gentle remesh/smooth, applies uniform inner offset c0 (mm), outer offset t (mm), plane trim at z_trim, exports STL + QC slices.
+Later: Variable clearance from curves (Gaussian falloff), curve-based trimline, edge flare, manufacturability checks.
+Quality gates: watertight, min thickness ≥ wall − 0.3 mm, sections computed every 10 mm without NaNs, provenance recorded.
+Mobile: Provide decimated GLB preview; keep heavy ops server-side initially.
+
+16) Example CLI (M0)
+socketlab make-socket \
+  --limb /case/artifacts/mesh.obj \
+  --outdir /case/socket/out \
+  --base-clearance-mm 2.5 \
+  --wall-mm 4.0 \
+  --trim-z-mm 120 \
+  --decimate-preview
+
+17) Common pitfalls (call these out early)
+
+Wrong units (m vs mm) → enormous sockets. Always validate bbox and scale.
+
+Normals inward after repairs → offset the wrong way. Recompute normals from manifold orientation.
+
+Over-smooth → erase bony relief; keep smoothing iterations minimal.
+
+For mixed phone lenses, don’t force single_camera=1 upstream; it harms recon scaling. (SocketLab itself is lens-agnostic.)

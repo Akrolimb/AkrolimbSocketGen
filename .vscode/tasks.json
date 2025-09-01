@@ -1,0 +1,69 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "docker-build-socketlab",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"-t",
+				"akrolimb/socketlab:0.1.0",
+				"."
+			],
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "docker-build-socketlab",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"-t",
+				"akrolimb/socketlab:0.1.0",
+				"."
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "docker-build-socketlab",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"-t",
+				"akrolimb/socketlab:0.1.0",
+				"."
+			],
+			"group": "build"
+		},
+		{
+			"label": "docker-build-socketlab",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"-t",
+				"akrolimb/socketlab:0.1.0",
+				"."
+			],
+			"group": "build"
+		},
+		{
+			"label": "docker-build-socketlab",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"-t",
+				"akrolimb/socketlab:0.1.0",
+				"."
+			],
+			"group": "build"
+		}
+	]
+}
