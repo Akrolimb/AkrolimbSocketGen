@@ -4,6 +4,28 @@ import { Canvas, useThree } from '@react-three/fiber'
 import { OrbitControls, Grid, Environment, GizmoHelper, GizmoViewport, Html, Loader } from '@react-three/drei'
 import { GLTFLoader, STLLoader } from 'three-stdlib'
 import * as THREE from 'three'
+function MarkingController({ enabled, limbObject, onPlace }) {
+  const { gl, camera } = useThree()
+  const raycasterRef = React.useRef(new THREE.Raycaster())
+  React.useEffect(() => {
+    function handleDown(e) {
+      if (!enabled || !limbObject) return
+      const rect = gl.domElement.getBoundingClientRect()
+      const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      const raycaster = raycasterRef.current
+      raycaster.setFromCamera({ x, y }, camera)
+      const intersects = raycaster.intersectObject(limbObject, true)
+      if (intersects && intersects.length > 0) {
+        onPlace && onPlace(intersects[0].point)
+      }
+    }
+    const el = gl.domElement
+    el.addEventListener('pointerdown', handleDown)
+    return () => el.removeEventListener('pointerdown', handleDown)
+  }, [enabled, limbObject, gl, camera, onPlace])
+  return null
+}
 
 function Model({ url, onTransform, onObjectReady }) {
   const [scene, setScene] = React.useState()
@@ -231,29 +253,16 @@ function Viewer() {
     }
   }
 
-  // Raycasting to place marks on the limb
-  const { gl, camera, scene } = useThree()
-  const raycasterRef = React.useRef(new THREE.Raycaster())
-  const onCanvasClick = React.useCallback((e) => {
-    if (!markMode || !limbObject) return
-    const rect = gl.domElement.getBoundingClientRect()
-    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
-    const raycaster = raycasterRef.current
-    raycaster.setFromCamera({ x, y }, camera)
-    const intersects = raycaster.intersectObject(limbObject, true)
-    if (intersects && intersects.length > 0) {
-      const p = intersects[0].point.clone()
-      // Store viewer-space position p
-      const m = {
-        type: markType,
-        vpos: p,
-        radius_mm: parseFloat(markRadius) || 10,
-        amount_mm: parseFloat(markAmount) || 2,
-      }
-      setMarks(prev => [...prev, m])
+  // Mark placement callback (consumed by MarkingController inside Canvas)
+  const onPlaceMark = React.useCallback((p) => {
+    const m = {
+      type: markType,
+      vpos: p.clone(),
+      radius_mm: parseFloat(markRadius) || 10,
+      amount_mm: parseFloat(markAmount) || 2,
     }
-  }, [markMode, limbObject, gl, camera, markType, markRadius, markAmount])
+    setMarks(prev => [...prev, m])
+  }, [markType, markRadius, markAmount])
 
   // Helper to compute viewer sphere radius for display
   const viewerRadius = React.useCallback((radius_mm) => {
@@ -267,7 +276,7 @@ function Viewer() {
 
   return (
     <div style={{width:'100vw', height:'100vh'}}>
-  <Canvas camera={{ position: [1.5, 1.2, 1.5], fov: 50 }} dpr={[1, 2]} onPointerDown={onCanvasClick}>
+  <Canvas camera={{ position: [1.5, 1.2, 1.5], fov: 50 }} dpr={[1, 2]}>
         <color attach="background" args={[0,0,0]} />
         <ambientLight intensity={0.6} />
         <directionalLight position={[3,3,3]} intensity={0.8} />
@@ -286,6 +295,7 @@ function Viewer() {
               <meshStandardMaterial color={m.type==='pad'?'#22c55e': m.type==='relief'?'#ef4444':'#f59e0b'} transparent opacity={0.25} />
             </mesh>
           ))}
+          <MarkingController enabled={markMode} limbObject={limbObject} onPlace={onPlaceMark} />
         </React.Suspense>
         <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
       </Canvas>
