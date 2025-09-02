@@ -1,7 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls, Grid, Environment, GizmoHelper, GizmoViewport, Html, Loader } from '@react-three/drei'
+import { OrbitControls, Grid, Environment, GizmoHelper, GizmoViewport, Html } from '@react-three/drei'
 import { GLTFLoader, STLLoader } from 'three-stdlib'
 import * as THREE from 'three'
 function MarkingController({ enabled, limbObject, onPlace }) {
@@ -170,6 +170,7 @@ function Viewer() {
   const [socketZUp, setSocketZUp] = React.useState(true)
   const [nudge, setNudge] = React.useState({ x: 0, y: 0, z: 0 })
   const [limbObject, setLimbObject] = React.useState(null)
+  const [showDebug, setShowDebug] = React.useState(false)
 
   // Marking state
   const [markMode, setMarkMode] = React.useState(false)
@@ -324,6 +325,9 @@ function Viewer() {
             Download STL
           </a>
         )}
+        <label style={{color:'#fff', display:'flex', alignItems:'center', gap:6}}>
+          <input type="checkbox" checked={showDebug} onChange={(e)=>setShowDebug(e.target.checked)} /> Debug
+        </label>
   <span style={{color:'#aaa', marginLeft:12}}>Nudge (mm):</span>
   <input type="number" step="0.1" value={nudge.x} onChange={(e)=>setNudge({...nudge, x: parseFloat(e.target.value||'0')})} style={{width:70, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
   <input type="number" step="0.1" value={nudge.y} onChange={(e)=>setNudge({...nudge, y: parseFloat(e.target.value||'0')})} style={{width:70, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
@@ -350,12 +354,11 @@ function Viewer() {
         <input type="number" step="1" value={trimZmm} onChange={(e)=>setTrimZmm(e.target.value)} style={{width:110, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
       </div>
 
-      {apiResult && (
+  {apiResult && showDebug && (
         <div style={{position:'absolute', bottom: 12, left: 12, right: 12, padding:12, background:'rgba(17,17,17,0.9)', color:'#fff', border:'1px solid #333', borderRadius:8}}>
           <pre style={{margin:0, whiteSpace:'pre-wrap'}}>{JSON.stringify(apiResult, null, 2)}</pre>
         </div>
       )}
-      <Loader containerStyles={{ background: 'rgba(0,0,0,0.6)' }} barStyles={{ background: '#8B5CF6' }} />
     </div>
   )
 }
