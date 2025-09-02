@@ -6,3 +6,4 @@ scikit-image>=0.22
 rtree>=1.1
 fastapi
 uvicorn
+python-multipart

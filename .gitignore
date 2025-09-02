@@ -29,3 +29,14 @@ webviewer/dist/
 
 # Logs
 *.log
+
+# Runtime/uploads and sample assets
+uploads/
+!uploads/.gitkeep
+testModel/*.glb
+!testModel/.gitkeep
+webviewer/public/uploads/
+!webviewer/public/uploads/.gitkeep
+
+# Avoid accidental root lockfile (webviewer has its own)
+/package-lock.json
