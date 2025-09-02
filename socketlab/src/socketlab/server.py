@@ -58,6 +58,8 @@ async def api_make_socket(
     voxel_mm: Optional[float] = Form(default=None),
     assume_units: Optional[str] = Form(default=None),  # mm|cm|m
     scale_factor: Optional[float] = Form(default=None),
+    marks_json: Optional[str] = Form(default=None),
+    marks_units: Optional[str] = Form(default="mm"),
 ):
     dbg_id = uuid.uuid4().hex[:8]
     logger.info("[%s] POST /api/make-socket", dbg_id)
@@ -130,6 +132,22 @@ async def api_make_socket(
         except Exception:
             pass
 
+    # Parse marks if provided
+    parsed_marks = None
+    if marks_json:
+        try:
+            import json as _json
+            parsed_marks = _json.loads(marks_json)
+            if not isinstance(parsed_marks, list):
+                parsed_marks = None
+        except Exception as e:
+            logger.warning("[%s] Invalid marks_json: %s", dbg_id, e)
+            parsed_marks = None
+    if parsed_marks:
+        # store in opts; make_socket/make_shell will consume in mm; we'll scale centers to mm after we know scale_applied
+        setattr(opts, 'marks', parsed_marks)
+        setattr(opts, 'marks_units', marks_units or 'mm')
+
     try:
         res = make_socket(opts)
     except Exception as e:
@@ -179,7 +197,7 @@ async def api_make_socket(
     if limb_center_mm and socket_center_mm:
         delta_mm = [socket_center_mm[i] - limb_center_mm[i] for i in range(3)]
 
-    return {
+    resp = {
         "socket_inner_url": to_static_url(res.socket_inner_path),
         "socket_outer_url": to_static_url(res.socket_outer_path),
         "socket_trimmed_url": to_static_url(res.socket_trimmed_path),
@@ -195,6 +213,10 @@ async def api_make_socket(
         "socket_center_mm": socket_center_mm,
         "delta_mm": delta_mm,
     }
+    if parsed_marks:
+        resp["marks"] = parsed_marks
+        resp["marks_units"] = marks_units
+    return resp
 
 
 # Serve /static from DATA_ROOT so the frontend can fetch outputs

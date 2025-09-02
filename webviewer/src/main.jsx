@@ -1,11 +1,11 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import { OrbitControls, Grid, Environment, GizmoHelper, GizmoViewport, Html, Loader } from '@react-three/drei'
 import { GLTFLoader, STLLoader } from 'three-stdlib'
 import * as THREE from 'three'
 
-function Model({ url, onTransform }) {
+function Model({ url, onTransform, onObjectReady }) {
   const [scene, setScene] = React.useState()
   const [error, setError] = React.useState(null)
   const lastObjectUrlRef = React.useRef(null)
@@ -34,10 +34,11 @@ function Model({ url, onTransform }) {
         // Translate first, then scale (so socket can reuse same transform order)
         s.position.sub(center)
         s.scale.setScalar(scale)
-        setScene(s)
+  setScene(s)
         const t = { scale, center: center.clone() }
         setNorm(t)
         onTransform && onTransform(t)
+  onObjectReady && onObjectReady(s)
       },
       undefined,
       (e) => setError(e.message || 'Failed to load model')
@@ -146,6 +147,15 @@ function Viewer() {
   const [socketTransform, setSocketTransform] = React.useState(null)
   const [socketZUp, setSocketZUp] = React.useState(true)
   const [nudge, setNudge] = React.useState({ x: 0, y: 0, z: 0 })
+  const [limbObject, setLimbObject] = React.useState(null)
+
+  // Marking state
+  const [markMode, setMarkMode] = React.useState(false)
+  const [markType, setMarkType] = React.useState('pad') // 'pad' | 'relief' | 'trim'
+  const [markRadius, setMarkRadius] = React.useState(20)
+  const [markAmount, setMarkAmount] = React.useState(2)
+  const [marks, setMarks] = React.useState([]) // items: { type, vpos: Vector3, center_mm:[x,y,z], radius_mm, amount_mm }
+  const [trimZmm, setTrimZmm] = React.useState('')
 
   const onPickFile = (e) => {
     const file = e.target.files?.[0]
@@ -154,7 +164,7 @@ function Viewer() {
     setPath(url)
   }
 
-  const callMakeSocket = async () => {
+  const callMakeSocket = async (includeMarks=false) => {
     try {
       setBusy(true)
       setApiResult(null)
@@ -177,6 +187,26 @@ function Viewer() {
       }
       fd.append('base_clearance_mm', '2.5')
       fd.append('wall_mm', '4.0')
+      if (trimZmm !== '') fd.append('trim_z_mm', String(parseFloat(trimZmm)))
+      if (includeMarks && marks.length > 0) {
+        // Ensure we can convert viewer coords to mm: need limbTransform and last scale_applied if available
+        const unitScale = limbTransform?.scale ?? 1.0
+        const unitCenter = limbTransform?.center ?? new THREE.Vector3(0,0,0)
+        const serverScale = apiResult?.scale_applied ?? 1.0
+        const toMm = (v) => {
+          // viewer -> native -> mm
+          const native = new THREE.Vector3().copy(v).multiplyScalar(1.0 / unitScale).add(unitCenter)
+          return native.multiplyScalar(serverScale)
+        }
+        const payload = marks.map(m => ({
+          type: m.type,
+          center_mm: (()=>{ const mm = toMm(m.vpos); return [mm.x, mm.y, mm.z] })(),
+          radius_mm: m.radius_mm,
+          amount_mm: m.amount_mm
+        }))
+        fd.append('marks_json', JSON.stringify(payload))
+        fd.append('marks_units', 'mm')
+      }
       const res = await fetch(`${apiHost}/api/make-socket`, { method: 'POST', body: fd })
       const json = await res.json()
       setApiResult(json)
@@ -201,9 +231,43 @@ function Viewer() {
     }
   }
 
+  // Raycasting to place marks on the limb
+  const { gl, camera, scene } = useThree()
+  const raycasterRef = React.useRef(new THREE.Raycaster())
+  const onCanvasClick = React.useCallback((e) => {
+    if (!markMode || !limbObject) return
+    const rect = gl.domElement.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+    const raycaster = raycasterRef.current
+    raycaster.setFromCamera({ x, y }, camera)
+    const intersects = raycaster.intersectObject(limbObject, true)
+    if (intersects && intersects.length > 0) {
+      const p = intersects[0].point.clone()
+      // Store viewer-space position p
+      const m = {
+        type: markType,
+        vpos: p,
+        radius_mm: parseFloat(markRadius) || 10,
+        amount_mm: parseFloat(markAmount) || 2,
+      }
+      setMarks(prev => [...prev, m])
+    }
+  }, [markMode, limbObject, gl, camera, markType, markRadius, markAmount])
+
+  // Helper to compute viewer sphere radius for display
+  const viewerRadius = React.useCallback((radius_mm) => {
+    const unitScale = limbTransform?.scale ?? 1.0
+    const serverScale = apiResult?.scale_applied ?? 1.0
+    return (radius_mm / (serverScale || 1.0)) * unitScale
+  }, [limbTransform, apiResult])
+
+  const clearMarks = () => setMarks([])
+  const popMark = () => setMarks(prev => prev.slice(0, -1))
+
   return (
     <div style={{width:'100vw', height:'100vh'}}>
-      <Canvas camera={{ position: [1.5, 1.2, 1.5], fov: 50 }} dpr={[1, 2]}>
+  <Canvas camera={{ position: [1.5, 1.2, 1.5], fov: 50 }} dpr={[1, 2]} onPointerDown={onCanvasClick}>
         <color attach="background" args={[0,0,0]} />
         <ambientLight intensity={0.6} />
         <directionalLight position={[3,3,3]} intensity={0.8} />
@@ -213,8 +277,15 @@ function Viewer() {
           <GizmoViewport axisColors={["#ff3653", "#8adb00", "#2c8fff"]} labelColor="white" />
         </GizmoHelper>
         <React.Suspense fallback={<Html center style={{color:'#fff'}}>Loading GLB…</Html>}>
-          {showLimb && <Model url={path} onTransform={setLimbTransform} />}
+          {showLimb && <Model url={path} onTransform={setLimbTransform} onObjectReady={setLimbObject} />}
           {showSocket && socketUrl && <SocketModel url={socketUrl} transform={{ ...(socketTransform||{}), extraOffsetMm: nudge }} zUp={socketZUp} />}
+          {/* Mark visualizers */}
+          {marks.map((m, idx) => (
+            <mesh key={idx} position={m.vpos}>
+              <sphereGeometry args={[viewerRadius(m.radius_mm), 16, 16]} />
+              <meshStandardMaterial color={m.type==='pad'?'#22c55e': m.type==='relief'?'#ef4444':'#f59e0b'} transparent opacity={0.25} />
+            </mesh>
+          ))}
         </React.Suspense>
         <OrbitControls makeDefault enableDamping dampingFactor={0.1} />
       </Canvas>
@@ -227,8 +298,8 @@ function Viewer() {
          style={{padding:'8px 12px', borderRadius:8, border:'1px solid #444', background:'#111', color:'#fff'}} />
         <input style={{padding:'8px 12px', borderRadius:8, border:'1px solid #444', width:220, background:'#111', color:'#fff'}}
                value={apiHost} onChange={(e)=>setApiHost(e.target.value)} />
-        <button disabled={busy} style={{padding:'8px 12px', borderRadius:8, border:'1px solid #8B5CF6', background: busy?'#333':'transparent', color:'#fff'}}
-                onClick={callMakeSocket}>{busy ? 'Generating…' : 'Generate Socket'}</button>
+  <button disabled={busy} style={{padding:'8px 12px', borderRadius:8, border:'1px solid #8B5CF6', background: busy?'#333':'transparent', color:'#fff'}}
+    onClick={() => callMakeSocket(false)}>{busy ? 'Generating…' : 'Generate Socket'}</button>
         <label style={{color:'#fff', display:'flex', alignItems:'center', gap:6}}>
           <input type="checkbox" checked={showLimb} onChange={(e)=>setShowLimb(e.target.checked)} /> Limb
         </label>
@@ -238,7 +309,7 @@ function Viewer() {
         <label style={{color:'#fff', display:'flex', alignItems:'center', gap:6}}>
           <input type="checkbox" checked={socketZUp} onChange={(e)=>setSocketZUp(e.target.checked)} /> STL is Z-up
         </label>
-        {socketUrl && (
+  {socketUrl && (
           <a href={socketUrl} download style={{color:'#8B5CF6', textDecoration:'none', border:'1px solid #8B5CF6', borderRadius:8, padding:'6px 10px'}}>
             Download STL
           </a>
@@ -248,6 +319,27 @@ function Viewer() {
   <input type="number" step="0.1" value={nudge.y} onChange={(e)=>setNudge({...nudge, y: parseFloat(e.target.value||'0')})} style={{width:70, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
   <input type="number" step="0.1" value={nudge.z} onChange={(e)=>setNudge({...nudge, z: parseFloat(e.target.value||'0')})} style={{width:70, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
       </div>
+      {/* Marking + trim controls */}
+      <div style={{position:'absolute', top: 60, left: 12, display:'flex', gap:8, alignItems:'center', background:'rgba(17,17,17,0.9)', padding:8, border:'1px solid #333', borderRadius:8}}>
+        <label style={{color:'#fff', display:'flex', alignItems:'center', gap:6}}>
+          <input type="checkbox" checked={markMode} onChange={(e)=>setMarkMode(e.target.checked)} /> Mark mode
+        </label>
+        <select value={markType} onChange={(e)=>setMarkType(e.target.value)} style={{padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}}>
+          <option value="pad">Loosen (pad)</option>
+          <option value="relief">Tighten (press)</option>
+          <option value="trim">Trim (cutout)</option>
+        </select>
+        <span style={{color:'#aaa'}}>Radius (mm)</span>
+        <input type="number" step="1" value={markRadius} onChange={(e)=>setMarkRadius(e.target.value)} style={{width:90, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
+        <span style={{color:'#aaa'}}>Amount (mm)</span>
+        <input type="number" step="0.5" value={markAmount} onChange={(e)=>setMarkAmount(e.target.value)} style={{width:90, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
+        <button style={{padding:'6px 10px', borderRadius:8, border:'1px solid #666', background:'transparent', color:'#fff'}} onClick={popMark}>Undo</button>
+        <button style={{padding:'6px 10px', borderRadius:8, border:'1px solid #666', background:'transparent', color:'#fff'}} onClick={clearMarks}>Clear</button>
+        <button disabled={busy || marks.length===0 || !apiResult} style={{padding:'6px 10px', borderRadius:8, border:'1px solid #8B5CF6', background: busy?'#333':'transparent', color:'#fff'}} onClick={()=>callMakeSocket(true)}>Apply Marks</button>
+        <span style={{color:'#aaa', marginLeft:12}}>Trim Z (mm)</span>
+        <input type="number" step="1" value={trimZmm} onChange={(e)=>setTrimZmm(e.target.value)} style={{width:110, padding:'6px 8px', borderRadius:6, border:'1px solid #444', background:'#111', color:'#fff'}} />
+      </div>
+
       {apiResult && (
         <div style={{position:'absolute', bottom: 12, left: 12, right: 12, padding:12, background:'rgba(17,17,17,0.9)', color:'#fff', border:'1px solid #333', borderRadius:8}}>
           <pre style={{margin:0, whiteSpace:'pre-wrap'}}>{JSON.stringify(apiResult, null, 2)}</pre>

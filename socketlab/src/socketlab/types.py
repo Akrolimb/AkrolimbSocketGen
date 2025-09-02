@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 
 @dataclass
@@ -13,6 +13,10 @@ class MakeSocketOptions:
     trim_z_mm: Optional[float] = None
     voxel_mm: Optional[float] = None  # None => auto (0.5–1.0mm based on bbox)
     decimate_preview: bool = False
+    # Optional annotations/marks to modulate clearance/trim locally.
+    # Format: List of dicts with keys: type ('pad'|'relief'|'trim'), center_mm [x,y,z], radius_mm, amount_mm
+    marks: Optional[List[Dict[str, Any]]] = None
+    marks_units: Optional[str] = None  # 'mm' or 'native'
 
 
 @dataclass

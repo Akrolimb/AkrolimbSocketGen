@@ -44,7 +44,7 @@ def make_socket(opts: MakeSocketOptions) -> MakeSocketResult:
     # For very small meshes, force a finer voxel pitch
     if max(bbox) < 100.0:
         voxel_mm = min(voxel_mm, 0.4)
-    inner, outer, shell = make_shell_inner_outer(limb, opts.base_clearance_mm, opts.wall_thickness_mm, voxel_mm)
+    inner, outer, shell = make_shell_inner_outer(limb, opts.base_clearance_mm, opts.wall_thickness_mm, voxel_mm, marks=getattr(opts, 'marks', None))
 
     trimmed = shell
     if opts.trim_z_mm is not None:
@@ -76,6 +76,8 @@ def make_socket(opts: MakeSocketOptions) -> MakeSocketResult:
         "voxel_mm": float(voxel_mm),
         "scale_applied": scale_applied,
     }
+    if getattr(opts, 'marks', None):
+        params["marks"] = getattr(opts, 'marks')
     stats = {
         "bbox_mm": [float(bbox[0]), float(bbox[1]), float(bbox[2])],
     "faces": int(trimmed.faces.shape[0]),

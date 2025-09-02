@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 
 import numpy as np
 import trimesh as tm
 from skimage.morphology import ball
 from skimage import measure
 from scipy.ndimage import binary_dilation, binary_erosion
+from scipy.ndimage import distance_transform_edt
 
 
 def auto_voxel_mm(bbox_mm: Tuple[float, float, float]) -> float:
@@ -57,6 +58,7 @@ def make_shell_inner_outer(
     base_clearance_mm: float,
     wall_mm: float,
     voxel_mm: Optional[float] = None,
+    marks: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[tm.Trimesh, tm.Trimesh, tm.Trimesh]:
     """Return inner, outer, and solid shell (outer minus inner) meshes via volumetric banding."""
     bbox = limb.bounding_box.extents
@@ -76,6 +78,10 @@ def make_shell_inner_outer(
 
     inner_grid = _safe_dilation(grid_padded, r_clear)
     outer_grid = _safe_dilation(inner_grid, r_wall)
+
+    # Apply local mark adjustments on the shell band if provided
+    if marks:
+        inner_grid, outer_grid = _apply_marks(inner_grid, outer_grid, voxel_mm, origin=np.array(vox.transform[:3, 3]) - pad_vox * voxel_mm, marks=marks)
 
     shell_grid = outer_grid & (~inner_grid)
     if not shell_grid.any():
@@ -165,3 +171,68 @@ def _safe_dilation(grid: np.ndarray, r: int) -> np.ndarray:
             return g
         rr -= 1
     return grid.copy()
+
+
+def _apply_marks(inner_grid: np.ndarray, outer_grid: np.ndarray, voxel_mm: float, origin: np.ndarray, marks: List[Dict[str, Any]]):
+    """Modify inner/outer occupancy using spherical marks:
+    - pad: increase local clearance (grow inner locally)
+    - relief: decrease local clearance (erode inner locally)
+    - trim: cut shell entirely inside sphere
+    """
+    grid_shape = inner_grid.shape
+    # Precompute voxel coordinate grid origin and spacing
+    # Map world point p to voxel index approx: i = round((p - origin)/voxel_mm)
+    for mk in marks:
+        try:
+            mtype = mk.get('type', 'pad')
+            cx, cy, cz = [float(v) for v in mk.get('center_mm', mk.get('center', [0,0,0]))]
+            radius_mm = float(mk.get('radius_mm', mk.get('radius', 10.0)))
+            amount_mm = float(mk.get('amount_mm', mk.get('amount', 1.0)))
+        except Exception:
+            continue
+        # Build a spherical mask in voxel space around center
+        # Determine bounding box in voxel indices
+        center_vox = np.round((np.array([cx, cy, cz]) - origin) / voxel_mm).astype(int)
+        r_vox = max(1, int(np.ceil(radius_mm / voxel_mm)))
+        # Bounds
+        x0, x1 = max(0, center_vox[0]-r_vox), min(grid_shape[0]-1, center_vox[0]+r_vox)
+        y0, y1 = max(0, center_vox[1]-r_vox), min(grid_shape[1]-1, center_vox[1]+r_vox)
+        z0, z1 = max(0, center_vox[2]-r_vox), min(grid_shape[2]-1, center_vox[2]+r_vox)
+        if x0>=x1 or y0>=y1 or z0>=z1:
+            continue
+        # Create local boolean cube
+        lx = np.arange(x0, x1+1)
+        ly = np.arange(y0, y1+1)
+        lz = np.arange(z0, z1+1)
+        gx, gy, gz = np.meshgrid(lx, ly, lz, indexing='ij')
+        # World distance from sphere center for each voxel center
+        px = origin[0] + gx * voxel_mm
+        py = origin[1] + gy * voxel_mm
+        pz = origin[2] + gz * voxel_mm
+        dist = np.sqrt((px - cx)**2 + (py - cy)**2 + (pz - cz)**2)
+        sphere = dist <= radius_mm
+
+        if mtype == 'trim':
+            # Zero out both inner and outer where sphere applies
+            inner_grid[x0:x1+1, y0:y1+1, z0:z1+1][sphere] = False
+            outer_grid[x0:x1+1, y0:y1+1, z0:z1+1][sphere] = False
+            continue
+        # For pad/relief, adjust inner surface position locally by amount_mm
+        amt_vox = max(1, int(np.round(abs(amount_mm) / voxel_mm)))
+        local = inner_grid[x0:x1+1, y0:y1+1, z0:z1+1]
+        if mtype == 'pad':
+            # Grow inner outward within the spherical region
+            grown = binary_dilation(local, structure=ball(amt_vox))
+            # Only apply inside the sphere mask to avoid global growth
+            local[sphere] = grown[sphere]
+        elif mtype == 'relief':
+            er = binary_erosion(local, structure=ball(amt_vox))
+            local[sphere] = er[sphere]
+        inner_grid[x0:x1+1, y0:y1+1, z0:z1+1] = local
+        # Ensure outer contains inner plus wall; grow outer if needed locally
+        outer_local = outer_grid[x0:x1+1, y0:y1+1, z0:z1+1]
+        need = inner_grid[x0:x1+1, y0:y1+1, z0:z1+1] & (~outer_local)
+        if need.any():
+            outer_local = outer_local | need
+        outer_grid[x0:x1+1, y0:y1+1, z0:z1+1] = outer_local
+    return inner_grid, outer_grid
