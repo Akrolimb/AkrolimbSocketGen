@@ -12,6 +12,7 @@ from .io import load_mesh, check_units_mm, save_mesh, save_json, sha256_file, ap
 from .offset import make_shell_inner_outer, trim_with_plane_volumetric, auto_voxel_mm
 from .qc import compute_sections, write_sections_csv
 from .prov import write_provenance
+from .preprocess import normalize_pose
 
 
 def make_socket(opts: MakeSocketOptions) -> MakeSocketResult:
@@ -39,6 +40,17 @@ def make_socket(opts: MakeSocketOptions) -> MakeSocketResult:
             limb = apply_scale(limb, 1000.0)
             scale_applied = 1000.0
             ok_units, bbox = check_units_mm(limb)
+
+    # Normalize pose to canonical frame (align to +Z, recenter XY, Z>=0)
+    try:
+        V2, T_world_to_norm = normalize_pose(limb.vertices, limb.faces)
+        limb = limb.copy()
+        limb.vertices = V2
+        limb.rezero()
+        # Re-check bbox after normalization
+        ok_units, bbox = check_units_mm(limb)
+    except Exception:
+        T_world_to_norm = np.eye(4)
 
     voxel_mm = opts.voxel_mm or auto_voxel_mm(tuple(map(float, bbox)))
     # For very small meshes, force a finer voxel pitch
@@ -75,6 +87,10 @@ def make_socket(opts: MakeSocketOptions) -> MakeSocketResult:
         "trim": {"mode": "plane" if opts.trim_z_mm is not None else "none", "z_mm": opts.trim_z_mm},
         "voxel_mm": float(voxel_mm),
         "scale_applied": scale_applied,
+        "pose": {
+            "T_world_to_norm": [[float(x) for x in row] for row in T_world_to_norm.tolist()],
+            "normalized": True,
+        },
     }
     if getattr(opts, 'marks', None):
         params["marks"] = getattr(opts, 'marks')

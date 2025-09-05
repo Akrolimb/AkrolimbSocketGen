@@ -157,7 +157,7 @@ function SocketModel({ url, transform, zUp=true }) {
 
 function Viewer() {
   // Default to file served from public/ folder
-  const [path, setPath] = React.useState('/26_02_2025.glb')
+  const [path, setPath] = React.useState('/05_09_2025.glb')
   const fileInputRef = React.useRef(null)
   const [apiHost, setApiHost] = React.useState('http://localhost:8000')
   const [apiResult, setApiResult] = React.useState(null)
@@ -179,6 +179,8 @@ function Viewer() {
   const [markAmount, setMarkAmount] = React.useState(2)
   const [marks, setMarks] = React.useState([]) // items: { type, vpos: Vector3, center_mm:[x,y,z], radius_mm, amount_mm }
   const [trimZmm, setTrimZmm] = React.useState('')
+  const [overlayUrl, setOverlayUrl] = React.useState(null)
+  const [annotationsUrl, setAnnotationsUrl] = React.useState(null)
 
   const onPickFile = (e) => {
     const file = e.target.files?.[0]
@@ -275,6 +277,28 @@ function Viewer() {
   const clearMarks = () => setMarks([])
   const popMark = () => setMarks(prev => prev.slice(0, -1))
 
+  const detectMarkings = async () => {
+    try {
+      if (!path) return
+      const fd = new FormData()
+      if (path.startsWith('blob:')) {
+        const blob = await fetch(path).then(r => r.blob())
+        fd.append('glb_file', new File([blob], 'model.glb', { type: 'model/gltf-binary' }))
+      } else {
+        // Fetch the public asset and reupload (browser cannot send server-side path for this endpoint)
+        const blob = await fetch(path).then(r => r.blob())
+        fd.append('glb_file', new File([blob], 'model.glb', { type: 'model/gltf-binary' }))
+      }
+      const res = await fetch(`${apiHost}/api/markings/detect`, { method: 'POST', body: fd })
+      const json = await res.json()
+      setApiResult(prev => ({ ...(prev||{}), markings: json }))
+      if (json.overlay_glb_url) setOverlayUrl(json.overlay_glb_url.startsWith('http') ? json.overlay_glb_url : `${apiHost}${json.overlay_glb_url}`)
+      if (json.annotations_url) setAnnotationsUrl(json.annotations_url.startsWith('http') ? json.annotations_url : `${apiHost}${json.annotations_url}`)
+    } catch (e) {
+      setApiResult(prev => ({ ...(prev||{}), markings_error: e.message || 'Detect failed' }))
+    }
+  }
+
   return (
     <div style={{width:'100vw', height:'100vh'}}>
   <Canvas camera={{ position: [1.5, 1.2, 1.5], fov: 50 }} dpr={[1, 2]}>
@@ -320,6 +344,7 @@ function Viewer() {
         <label style={{color:'#fff', display:'flex', alignItems:'center', gap:6}}>
           <input type="checkbox" checked={socketZUp} onChange={(e)=>setSocketZUp(e.target.checked)} /> STL is Z-up
         </label>
+  <button style={{padding:'8px 12px', borderRadius:8, border:'1px solid #8B5CF6', background:'transparent', color:'#fff'}} onClick={detectMarkings}>Detect Markings</button>
   {socketUrl && (
           <a href={socketUrl} download style={{color:'#8B5CF6', textDecoration:'none', border:'1px solid #8B5CF6', borderRadius:8, padding:'6px 10px'}}>
             Download STL
