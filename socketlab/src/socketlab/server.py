@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .types import MakeSocketOptions
 from .cli import make_socket
+from .markings.detect_uv import detect_markings_from_glb
 
 
 # Prefer env DATA_ROOT; otherwise default to the repo root (three parents up from this file)
@@ -217,6 +218,44 @@ async def api_make_socket(
         resp["marks"] = parsed_marks
         resp["marks_units"] = marks_units
     return resp
+
+
+@app.post("/api/markings/detect")
+async def api_markings_detect(
+    glb_file: UploadFile = File(...),
+):
+    dbg_id = uuid.uuid4().hex[:8]
+    logger.info("[%s] POST /api/markings/detect", dbg_id)
+    if not glb_file:
+        raise HTTPException(status_code=400, detail="Provide glb_file upload.")
+    suffix = os.path.splitext(glb_file.filename or "upload.glb")[1] or ".glb"
+    stem = os.path.splitext(glb_file.filename or "upload")[0]
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    unique = f"{stem}_{ts}_{uuid.uuid4().hex[:8]}{suffix}"
+    save_path = os.path.join(UPLOADS_DIR, unique)
+    content = await glb_file.read()
+    with open(save_path, "wb") as f:
+        f.write(content)
+    # Outputs
+    outdir = os.path.join(OUT_DIR, f"markings_{ts}_{uuid.uuid4().hex[:6]}")
+    os.makedirs(outdir, exist_ok=True)
+    overlay_glb = os.path.join(outdir, "overlay.glb")
+    anno_json = os.path.join(outdir, "annotations.json")
+    # For MVP, pass-through; detection will write empty annotations
+    try:
+        summary = detect_markings_from_glb(save_path, overlay_glb, anno_json, color_profiles=None)
+    except Exception as e:
+        logger.exception("[%s] detection failed: %s", dbg_id, e)
+        raise HTTPException(status_code=500, detail=f"Marking detection failed: {e}")
+
+    def to_static_url(p: str) -> str:
+        rel = os.path.relpath(p, DATA_ROOT).replace("\\", "/")
+        return f"/static/{rel}"
+    return {
+        "annotations_url": to_static_url(anno_json),
+        "overlay_glb_url": to_static_url(save_path if not os.path.exists(overlay_glb) else overlay_glb),
+        "summary": summary,
+    }
 
 
 # Serve /static from DATA_ROOT so the frontend can fetch outputs
